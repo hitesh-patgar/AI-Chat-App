@@ -11,6 +11,7 @@
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
     "groq-sdk": "^0.37.0",
+    "mongoose": "^8.20.2",
     "openai": "^4.104.0"
   },
   "keywords": [],

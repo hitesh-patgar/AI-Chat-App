@@ -1,19 +1,17 @@
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs").promises;
-const path = require("path");
+const mongoose = require("mongoose");
 require("dotenv").config();
 
 // Groq SDK
 const Groq = require("groq-sdk");
+const Message = require("./models/Message");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
-
-const MESSAGES_FILE = path.join(__dirname, "messages.json");
 
 // Initialize Groq
 if (!process.env.GROQ_API_KEY) {
@@ -25,27 +23,38 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-// Helper: load messages from file
+// Connect to MongoDB
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/aichat";
+mongoose
+  .connect(MONGODB_URI)
+  .then(() => console.log("✅ Connected to MongoDB"))
+  .catch((err) => {
+    console.error("❌ MongoDB connection error:", err);
+    process.exit(1);
+  });
+
+// Helper: load messages from database
 async function loadMessages() {
   try {
-    const data = await fs.readFile(MESSAGES_FILE, "utf-8");
-    return JSON.parse(data);
+    const messages = await Message.find().sort({ timestamp: 1 }).lean();
+    return messages.map((msg) => ({
+      id: msg.id,
+      sender: msg.sender,
+      text: msg.text,
+      timestamp: msg.timestamp,
+    }));
   } catch (err) {
-    console.error("Error reading messages file:", err);
+    console.error("Error loading messages:", err);
     return [];
   }
 }
 
-// Helper: save messages to file
-async function saveMessages(messages) {
+// Helper: save message to database
+async function saveMessage(message) {
   try {
-    await fs.writeFile(
-      MESSAGES_FILE,
-      JSON.stringify(messages, null, 2),
-      "utf-8"
-    );
+    await Message.create(message);
   } catch (err) {
-    console.error("Error writing messages file:", err);
+    console.error("Error saving message:", err);
   }
 }
 
@@ -64,15 +73,16 @@ app.post("/api/chat", async (req, res) => {
   }
 
   try {
-    let messages = await loadMessages();
-
     const userMessage = {
       id: Date.now() + "-user",
       sender: "user",
       text: text.trim(),
       timestamp: new Date().toISOString(),
     };
-    messages.push(userMessage);
+    await saveMessage(userMessage);
+
+    // Load all messages for context
+    let messages = await loadMessages();
 
     // Build conversation history for Groq
     const conversationHistory = messages
@@ -89,10 +99,6 @@ app.post("/api/chat", async (req, res) => {
         content: "You are a helpful AI assistant inside an internship assignment chat app. Reply in a friendly and concise way.",
       },
       ...conversationHistory,
-      {
-        role: "user",
-        content: text.trim(),
-      },
     ];
 
     const completion = await groq.chat.completions.create({
@@ -110,9 +116,10 @@ app.post("/api/chat", async (req, res) => {
       text: aiText,
       timestamp: new Date().toISOString(),
     };
-    messages.push(aiMessage);
+    await saveMessage(aiMessage);
 
-    await saveMessages(messages);
+    // Reload messages to get updated list
+    messages = await loadMessages();
 
     res.json({
       messages,
